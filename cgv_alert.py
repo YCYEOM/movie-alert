@@ -2,6 +2,7 @@
 """CGV 예매 오픈 알리미 — 표준 라이브러리만 사용."""
 import gzip
 import http.client
+import re
 import json
 import os
 import sys
@@ -74,7 +75,8 @@ def get(path, **params):
         raise urllib.error.HTTPError(HOST + url, status, resp.reason, resp.headers, None)
     if enc == "gzip":
         raw = gzip.decompress(raw)
-    return json.loads(raw).get("data") or []
+    data = json.loads(raw).get("data")
+    return [] if data is None else data
 
 
 def theaters():
@@ -122,9 +124,9 @@ def scan(target, ymds, pause):
     return found
 
 
-def send(text, cfg):
+def send(text, cfg, env="DISCORD_WEBHOOK_URL"):
     """설정된 채널로 전송. Discord 와 Telegram 둘 다 켜져 있으면 둘 다 보낸다."""
-    discord = os.environ.get("DISCORD_WEBHOOK_URL") or cfg.get("discord_webhook")
+    discord = os.environ.get(env) or cfg.get("discord_webhook")
     token = os.environ.get("TELEGRAM_TOKEN") or cfg.get("telegram_token")
     chat = os.environ.get("TELEGRAM_CHAT_ID") or cfg.get("telegram_chat_id")
     if not discord and not token:
@@ -253,6 +255,49 @@ def heartbeat(cfg, state):
     save_state(state)
 
 
+def notices(cfg, state):
+    """이벤트 게시판에서 특별관·예매 관련 새 공고를 찾아 알린다.
+
+    회차가 실제로 열리는 순간(sweep/fast_check)과 달리, 이쪽은 "O월 O일 O시 오픈"
+    같은 사전 공고를 잡는다. 둘은 다른 사건이라 채널도 따로 둘 수 있다.
+    """
+    conf = cfg.get("notices") or {}
+    words = conf.get("keywords") or []
+    if not words:
+        return
+    try:
+        page = get(
+            "content/event/evt/evt/searchEvtListForPage",
+            sscnsChoiYn="N", expnYn="N", expoChnlCd="01",
+            startRow=0, listCount=conf.get("count", 40),
+        )
+        # 회차 API 와 달리 data 가 {startRow, totalCount, list:[...]} 형태다
+        rows = page.get("list") if isinstance(page, dict) else page
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        log(f"공고 조회 실패: {exc}")
+        return
+
+    pattern = re.compile("|".join(re.escape(w) for w in words), re.IGNORECASE)
+    first = "__notices__" not in state
+    seen = state.setdefault("__notices__", {})
+    fresh = []
+    for row in rows:
+        no = str(row.get("evntNo") or "")
+        name = (row.get("evntNm") or "").strip()
+        if not no or no in seen:
+            continue
+        seen[no] = name
+        if pattern.search(name):
+            fresh.append(name)
+    if first:
+        log(f"공고 기준선 {len(seen)}건 (첫 실행이라 알림 없음)")
+    elif fresh:
+        log(f"공고 신규 {len(fresh)}건")
+        send("**예매 오픈 공고**\n" + "\n".join("· " + f for f in fresh),
+             conf, env="NOTICE_WEBHOOK_URL")
+    save_state(state)
+
+
 def save_state(state):
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False)
@@ -295,6 +340,21 @@ def selftest():
     for uptime in (5.0, 90.0, 999999.0):
         assert uptime - float("-inf") >= 1800, "첫 회는 무조건 전체 스윕"
 
+    # 공고 필터: 키워드가 든 것만, 그리고 한 번 본 것은 다시 알리지 않는다
+    pat = re.compile("|".join(re.escape(w) for w in ["예매", "IMAX", "SCREENX"]), re.IGNORECASE)
+    rows = [{"evntNo": "1", "evntNm": "[오디세이] IMAX N차 관람 이벤트"},
+            {"evntNo": "2", "evntNm": "8월 팝콘 할인"},
+            {"evntNo": "3", "evntNm": "[아바타] 아이맥스 예매 오픈 안내"}]
+    seen, fresh = {}, []
+    for r in rows:
+        if r["evntNo"] in seen:
+            continue
+        seen[r["evntNo"]] = r["evntNm"]
+        if pat.search(r["evntNm"]):
+            fresh.append(r["evntNm"])
+    assert len(fresh) == 2 and "팝콘" not in " ".join(fresh)
+    assert [r for r in rows if r["evntNo"] not in seen] == [], "두 번째 순회에선 신규 없음"
+
     assert window(3)[0] == date.today().strftime("%Y%m%d")
     assert len(window(21)) == 21
 
@@ -313,7 +373,7 @@ if __name__ == "__main__":
     else:
         config = load_config()
         saved = load_state()
-        if any("shows" not in v for k, v in saved.items() if k != "__meta__"):
+        if any("shows" not in v for k, v in saved.items() if not k.startswith("__")):
             saved = {}  # 옛 형식이면 기준선부터 다시 (알림 없음)
         full_every = config.get("poll_seconds", 300)
         fast_every = config.get("fast_seconds", 10)
@@ -322,7 +382,12 @@ if __name__ == "__main__":
         # time.monotonic() 은 부팅 후 경과 초라, 갓 부팅한 서버에서는 값이 작다.
         # 0 으로 두면 첫 스윕이 poll_seconds 만큼 늦어진다. -inf 면 항상 즉시 실행.
         last_full = float("-inf")
+        last_ntc = float("-inf")
+        ntc_every = config.get("notice_seconds", 300)
         while True:
+            if time.monotonic() - last_ntc >= ntc_every:
+                notices(config, saved)
+                last_ntc = time.monotonic()
             if time.monotonic() - last_full >= full_every:
                 sweep(config, saved)
                 heartbeat(config, saved)

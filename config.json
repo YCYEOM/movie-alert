@@ -4,6 +4,7 @@
   "fast_dates": 2,
   "days_ahead": 21,
   "heartbeat_hours": 24,
+  "notice_seconds": 300,
   "targets": [
     {
       "name": "용산아이파크몰",
@@ -51,6 +52,19 @@
       ]
     }
   ],
+  "notices": {
+    "keywords": [
+      "예매",
+      "아이맥스",
+      "IMAX",
+      "4DX",
+      "SCREENX",
+      "돌비",
+      "특별관"
+    ],
+    "count": 40,
+    "discord_webhook": ""
+  },
   "notify": {
     "discord_webhook": "",
     "telegram_token": "",
