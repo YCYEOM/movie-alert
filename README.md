@@ -70,7 +70,37 @@ Discord는 Cloudflare 서울 PoP를 타고, Telegram은 한국에 접점이 없�
 - 같은 극장을 상영관별로 쪼개 여러 target으로 두면 같은 데이터를 중복으로 받습니다.
   극장당 하나로 두고 `screens`에 나열하세요 — 알림 문구에 상영관 이름이 이미 들어갑니다.
 
-## GitHub Actions로 상시 실행
+## 서버에 상시 실행 (권장)
+
+리눅스 서버(Oracle Cloud 무료 티어 등)에서 한 줄이면 됩니다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YCYEOM/movie-alert/main/setup.sh \
+  | sudo bash -s -- '<디스코드 웹훅 URL>'
+```
+
+전용 계정으로 systemd 서비스를 등록하고 바로 켭니다. 죽으면 systemd가 5초 뒤 되살립니다.
+
+```bash
+journalctl -u movie-alert -f          # 로그
+systemctl restart movie-alert         # 재시작
+sudo vi /etc/movie-alert.env          # 웹훅/토큰 변경
+```
+
+상태 파일은 `/var/lib/movie-alert/state.json`에 둡니다. 저장소 안에 두면 `git pull`이 깨집니다.
+
+### 감지 속도
+
+서울에서 잰 값입니다. 연결을 재사용하면 요청당 84ms이고, 빠른 감시 1주기(6극장 × 2일 = 12요청)가 약 0.8초입니다.
+
+| 설정 | 1주기 | 최대 감지 지연 | CGV 요청 |
+|---|---|---|---|
+| `fast_seconds: 3` (기본) | 3.8초 | **약 4초** | 3.2 req/s |
+| `fast_seconds: 10` | 10.8초 | 약 11초 | 1.1 req/s |
+
+`fast_seconds`를 줄이면 빨라지지만 CGV 서버 부담이 커집니다. 실측으로 지속 3 req/s까지는 429가 나지 않았고, 무거운 전체 스윕(211KB × 126요청)을 연달아 돌렸을 때만 429가 났습니다.
+
+## GitHub Actions로 실행 (대안)
 
 `.github/workflows/watch.yml`이 5분마다 `--once`를 돌리고, 갱신된 `state.json`을 저장소에 다시 커밋합니다.
 서버가 필요 없고 공개 저장소라 실행 시간도 무제한입니다.
@@ -85,6 +115,8 @@ gh secret set DISCORD_WEBHOOK_URL   # 붙여넣기 프롬프트가 뜹니다
 
 ### 한계
 
-**GitHub의 cron은 정시 보장이 없습니다.** `*/5`로 적어도 실제로는 10~20분 늦게 도는 일이 흔하고,
-플랫폼이 붐비면 아예 건너뛰기도 합니다. 예매 오픈을 초 단위로 노린다면 항상 켜져 있는 기계에서
-`python3 cgv_alert.py`를 직접 돌리는 쪽이 확실히 빠릅니다. Actions는 "놓치지 않는 것"에 맞는 선택입니다.
+**GitHub의 cron은 정시 보장이 없습니다.** 정시(`:00`, `:05`)에 부하가 몰려 10~20분 늦거나 아예
+건너뛰는 일이 흔합니다. 초 단위 경쟁에는 맞지 않습니다.
+
+**서버와 동시에 돌리지 마세요.** 상태 파일이 따로 놀아서 같은 알림이 두 번 옵니다.
+서버로 옮긴 뒤에는 `gh workflow disable watch.yml`로 꺼주세요.

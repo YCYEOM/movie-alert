@@ -1,0 +1,22 @@
+[Unit]
+Description=CGV 예매 오픈 알리미
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=movie-alert
+WorkingDirectory=/opt/movie-alert
+ExecStart=/usr/bin/python3 /opt/movie-alert/cgv_alert.py
+EnvironmentFile=/etc/movie-alert.env
+Environment=PYTHONUNBUFFERED=1 TZ=Asia/Seoul
+Restart=always
+RestartSec=5
+# 죽으면 systemd 가 되살린다. 앱 안에서 재실행을 흉내내지 않는다.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/movie-alert
+
+[Install]
+WantedBy=multi-user.target
