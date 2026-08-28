@@ -98,7 +98,8 @@ def post(url, payload):
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json"},
+        # user-agent 가 없으면 Discord 앞단 Cloudflare 가 403 error code 1010 을 낸다.
+        headers={"content-type": "application/json", "user-agent": HEADERS["user-agent"]},
     )
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
