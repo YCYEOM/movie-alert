@@ -1,5 +1,5 @@
 {
-  "poll_seconds": 300,
+  "poll_seconds": 1800,
   "fast_seconds": 3,
   "fast_dates": 2,
   "days_ahead": 21,

@@ -170,7 +170,12 @@ def alert(name, fresh, cfg):
 
 
 def sweep(cfg, state):
-    """전체 창을 훑어 기준선을 다시 잡고, 비어 있는 날짜 목록을 갱신한다."""
+    """전체 창을 훑어 기준선을 다시 잡고, 비어 있는 날짜 목록을 갱신한다.
+
+    ponytail: 스윕이 도는 ~50초 동안은 빠른 감시가 멈춘다(사각지대). 주기를 30분으로
+    두어 노출을 시간당 2회로 줄였다. 이마저 아까우면 (극장, 날짜) 하나씩 빠른 감시
+    사이에 끼워 넣는 커서 방식으로 바꾸면 사각지대가 사라진다.
+    """
     ymds = window(cfg.get("days_ahead", 21))
     for target in cfg["targets"]:
         name = target["name"]
