@@ -291,6 +291,10 @@ def selftest():
     entry["empty"] = [y for y in entry["empty"] if y not in opened]
     assert entry["empty"] == ["20260903"], "열린 날짜는 빠른 감시 대상에서 빠져야 함"
 
+    # 갓 부팅한 서버(monotonic 이 작음)에서도 첫 스윕이 즉시 돌아야 한다
+    for uptime in (5.0, 90.0, 999999.0):
+        assert uptime - float("-inf") >= 1800, "첫 회는 무조건 전체 스윕"
+
     assert window(3)[0] == date.today().strftime("%Y%m%d")
     assert len(window(21)) == 21
 
@@ -315,7 +319,9 @@ if __name__ == "__main__":
         fast_every = config.get("fast_seconds", 10)
         log(f"감시 시작: {[t['name'] for t in config['targets']]}")
         log(f"전체 {full_every}초 / 빠른 감시 {fast_every}초")
-        last_full = 0.0
+        # time.monotonic() 은 부팅 후 경과 초라, 갓 부팅한 서버에서는 값이 작다.
+        # 0 으로 두면 첫 스윕이 poll_seconds 만큼 늦어진다. -inf 면 항상 즉시 실행.
+        last_full = float("-inf")
         while True:
             if time.monotonic() - last_full >= full_every:
                 sweep(config, saved)
