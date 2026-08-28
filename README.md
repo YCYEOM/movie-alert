@@ -42,6 +42,18 @@ GET https://cgv.co.kr/api/v1/booking/searchMovScnInfo
 사라진 회차는 로그도 알림도 남기지 않습니다.
 
 **`Referer` 헤더가 필수입니다.** 없으면 Cloudflare WAF가 403을 돌려줍니다.
+
+**일부 데이터센터 IP는 통째로 차단됩니다.** Oracle Cloud 도쿄에서는 홈페이지까지 403이었고
+(같은 서버에서 네이버는 정상), GitHub Actions와 Cloudflare Workers에서는 200이었습니다.
+막히는 곳에서는 Cloudflare Worker를 프록시로 두고 아래 환경변수로 경유시킵니다.
+
+```bash
+CGV_HOST=<worker>.workers.dev
+CGV_API_PREFIX=/p/api/v1
+CGV_PROXY_KEY=<공유키>
+```
+
+실측상 오라클 도쿄 → Worker(NRT) → CGV 왕복이 104ms로, 서울에서 직접 부르는 84ms와 큰 차이가 없습니다.
 `accept-encoding: gzip`으로 응답이 211KB → 18KB로 줄어듭니다(하루치 기준).
 
 ## 알림 채널: Discord vs Telegram
