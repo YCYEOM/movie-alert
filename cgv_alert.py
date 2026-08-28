@@ -63,6 +63,8 @@ def log(msg):
 
 def get(path, **params):
     global _conn
+    if cooling():  # 쉬는 중엔 요청 자체를 만들지 않는다 (단계도 올리지 않음)
+        raise urllib.error.HTTPError(HOST, 429, "cooling", None, None)
     qs = "&".join(f"{k}={v}" for k, v in {"coCd": CO_CD, **params}.items())
     url = f"{API}/{path}?{qs}"
     for attempt in (1, 2):
@@ -210,6 +212,8 @@ def sweep(cfg, state):
             shows = scan(target, ymds, pause=0.3)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             log(f"{name} 전체조회 실패: {exc}")
+            if cooling():
+                return  # 제한에 걸렸으면 나머지 극장은 시도하지 않는다
             continue
         seen = {y for y in ymds if any(k.startswith(y) for k in shows)}
         entry = state.get(name)
@@ -241,6 +245,8 @@ def fast_check(cfg, state):
             shows = scan(target, watch, pause=0)
         except (urllib.error.URLError, OSError, ValueError) as exc:
             log(f"{name} 빠른조회 실패: {exc}")
+            if cooling():
+                break  # 제한에 걸렸으면 나머지 극장은 시도하지 않는다
             continue
         fresh = [shows[k] for k in shows if k not in entry["shows"]]
         if fresh:
@@ -403,6 +409,15 @@ def selftest():
         sweep({"targets": [{"name": "x", "site_no": "0"}], "days_ahead": 1}, {})
         notices({"notices": {"keywords": ["예매"]}}, {})
         assert calls == [], "쉬는 동안 요청이 나가면 안 됨"
+        # 쉬는 중 get() 은 네트워크에 나가지 않고 단계도 올리지 않아야 한다
+        before = g["_cool_step"]
+        for _ in range(6):
+            try:
+                get("booking/searchRegnList")
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 429
+        assert g["_cool_step"] == before, "쉬는 중 호출로 단계가 오르면 안 됨"
+
         g["_cool_until"] = 0.0
         assert not cooling(), "시간이 지나면 재개"
         assert [30 * 2 ** (n - 1) for n in range(1, 6)] == [30, 60, 120, 240, 480]
