@@ -10,8 +10,10 @@ import urllib.error
 import urllib.request
 from datetime import date, datetime, timedelta
 
-HOST = "cgv.co.kr"
-API = "/api/v1"
+# CGV 는 일부 데이터센터 IP(오라클 등)를 Cloudflare 로 403 차단한다.
+# 그런 곳에서는 CGV_HOST/CGV_API_PREFIX/CGV_PROXY_KEY 로 프록시를 경유한다.
+HOST = os.environ.get("CGV_HOST", "cgv.co.kr")
+API = os.environ.get("CGV_API_PREFIX", "/api/v1")
 CO_CD = "A420"
 # Referer 가 없으면 Cloudflare WAF 가 403 을 돌려준다. 나머지 헤더는 장식.
 HEADERS = {
@@ -24,6 +26,9 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
     ),
 }
+if os.environ.get("CGV_PROXY_KEY"):
+    HEADERS["x-proxy-key"] = os.environ["CGV_PROXY_KEY"]
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 서버 배포 시엔 저장소 밖(/var/lib)을 쓴다. 저장소 안이면 git pull 이 깨진다.
 STATE_PATH = os.environ.get("STATE_PATH") or os.path.join(HERE, "state.json")
