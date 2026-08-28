@@ -248,6 +248,16 @@ def fast_check(cfg, state):
             if cooling():
                 break  # 제한에 걸렸으면 나머지 극장은 시도하지 않는다
             continue
+        if any(k not in entry["shows"] for k in shows):
+            # 예매는 보통 여러 날이 한꺼번에 열린다. 앞 2일에서 낌새를 챘으면
+            # 남은 미오픈 날짜까지 마저 훑어서 한 통으로 알린다.
+            # 오픈은 드문 사건이라 요청이 늘어나는 것도 그때뿐이다.
+            rest = [y for y in entry["empty"] if y not in watch]
+            if rest:
+                try:
+                    shows.update(scan(target, rest, pause=0.1))
+                except (urllib.error.URLError, OSError, ValueError) as exc:
+                    log(f"{name} 잔여 날짜 조회 실패: {exc}")
         fresh = [shows[k] for k in shows if k not in entry["shows"]]
         if fresh:
             alert(name, fresh, cfg)
@@ -385,6 +395,17 @@ def selftest():
             fresh.append(r["evntNm"])
     assert len(fresh) == 2 and "팝콘" not in " ".join(fresh)
     assert [r for r in rows if r["evntNo"] not in seen] == [], "두 번째 순회에선 신규 없음"
+
+    # 오픈 감지 시 남은 미오픈 날짜까지 합쳐 한 통으로 알린다
+    empty = ["20260910", "20260911", "20260912", "20260913"]
+    watch = empty[:2]
+    rest = [y for y in empty if y not in watch]
+    assert rest == ["20260912", "20260913"], "앞 2일 외 나머지를 마저 봐야 함"
+    seen_shows = {}
+    found = {f"{y}|IMAX관|영화|1000": f"{y[4:6]}/{y[6:]} 10:00 영화 — IMAX관" for y in empty}
+    fresh = [found[k] for k in found if k not in seen_shows]
+    assert len(fresh) == 4, "4일치가 한 통에 담겨야 함"
+    assert sorted(fresh)[0].startswith("09/10") and sorted(fresh)[-1].startswith("09/13")
 
     # 재시작 시 스윕 타이밍: 오래됐으면 즉시, 신선하면 남은 시간만큼 대기
     def plan(age, every):
