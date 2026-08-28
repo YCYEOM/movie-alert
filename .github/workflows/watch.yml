@@ -1,0 +1,41 @@
+name: watch
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 실행이 겹치면 state.json push 가 충돌하므로 직렬화한다.
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 예매 오픈 확인
+        env:
+          TZ: Asia/Seoul   # 러너는 UTC 라서 없으면 날짜 창이 하루 밀린다
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 cgv_alert.py --once
+
+      - name: 스냅샷 저장
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add state.json
+          if git diff --staged --quiet; then
+            echo "변동 없음"
+          else
+            git commit -m "state: $(date -u +%FT%TZ)"
+            git pull --rebase --autostash
+            git push
+          fi

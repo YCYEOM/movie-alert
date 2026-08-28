@@ -1,0 +1,12 @@
+{
+  "poll_seconds": 180,
+  "days_ahead": 21,
+  "targets": [
+    { "name": "용산 특별관", "site_no": "0013", "screens": ["아이맥스", "4DX", "SCREENX"] }
+  ],
+  "notify": {
+    "discord_webhook": "",
+    "telegram_token": "",
+    "telegram_chat_id": ""
+  }
+}
