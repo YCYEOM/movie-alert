@@ -2,7 +2,12 @@
   "poll_seconds": 180,
   "days_ahead": 21,
   "targets": [
-    { "name": "용산 특별관", "site_no": "0013", "screens": ["아이맥스", "4DX", "SCREENX"] }
+    { "name": "용산아이파크몰", "site_no": "0013", "screens": ["아이맥스", "4DX", "SCREENX"] },
+    { "name": "여의도",       "site_no": "0112", "screens": ["4DX"] },
+    { "name": "센텀시티",     "site_no": "0089", "screens": ["아이맥스"] },
+    { "name": "서면",         "site_no": "0005", "screens": ["아이맥스"] },
+    { "name": "영등포",       "site_no": "0059", "screens": ["아이맥스", "SCREENX"] },
+    { "name": "왕십리",       "site_no": "0074", "screens": ["아이맥스"] }
   ],
   "notify": {
     "discord_webhook": "",
