@@ -92,6 +92,18 @@ curl -fsSL https://raw.githubusercontent.com/YCYEOM/movie-alert/main/setup.sh \
 ```
 
 전용 계정으로 systemd 서비스를 등록하고 바로 켭니다. 죽으면 systemd가 5초 뒤 되살립니다.
+재실행하면 최신 코드로 갱신됩니다.
+
+**패키지를 설치하지 않습니다.** Oracle E2.1.Micro(1 OCPU/1GB)에서 `dnf install`이 메모리를
+다 먹고 `sshd`까지 멈춰버려서, 기본 탑재된 `curl`과 `python3`만 쓰도록 만들었습니다.
+
+CGV가 서버 IP를 차단하는 환경이면 프록시 정보를 함께 넘깁니다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YCYEOM/movie-alert/main/setup.sh | sudo \
+  CGV_HOST=<worker>.workers.dev CGV_API_PREFIX=/p/api/v1 CGV_PROXY_KEY=<키> \
+  bash -s -- '<디스코드 웹훅 URL>'
+```
 
 ```bash
 journalctl -u movie-alert -f          # 로그
