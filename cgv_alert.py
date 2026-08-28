@@ -37,6 +37,15 @@ STATE_PATH = os.environ.get("STATE_PATH") or os.path.join(HERE, "state.json")
 # 연결을 재사용하면 요청당 99ms -> 75ms. 빠른 감시에서 이 차이가 누적된다.
 _conn = None
 
+# CGV 가 429 를 주면 일정 시간 요청을 아예 멈춘다. 그냥 재시도하면 서버를 두드리는
+# 꼴이고 제재만 길어진다. 성공하면 단계는 초기화.
+_cool_until = 0.0
+_cool_step = 0
+
+
+def cooling():
+    return time.monotonic() < _cool_until
+
 
 def drop_conn():
     global _conn
@@ -70,9 +79,18 @@ def get(path, **params):
             drop_conn()  # 서버가 끊은 연결일 수 있으니 한 번은 새로 맺어본다
             if attempt == 2:
                 raise
+    if status == 429:
+        global _cool_step, _cool_until
+        _cool_step = min(_cool_step + 1, 5)
+        wait = 30 * 2 ** (_cool_step - 1)  # 30, 60, 120, 240, 480초
+        _cool_until = time.monotonic() + wait
+        log(f"429 Too Many Requests — {wait}초간 요청 중단")
+        drop_conn()
+        raise urllib.error.HTTPError(HOST + url, status, "rate limited", resp.headers, None)
     if status != 200:
         drop_conn()
         raise urllib.error.HTTPError(HOST + url, status, resp.reason, resp.headers, None)
+    _cool_step = 0
     if enc == "gzip":
         raw = gzip.decompress(raw)
     data = json.loads(raw).get("data")
@@ -183,6 +201,8 @@ def sweep(cfg, state):
     두어 노출을 시간당 2회로 줄였다. 이마저 아까우면 (극장, 날짜) 하나씩 빠른 감시
     사이에 끼워 넣는 커서 방식으로 바꾸면 사각지대가 사라진다.
     """
+    if cooling():
+        return
     ymds = window(cfg.get("days_ahead", 21))
     for target in cfg["targets"]:
         name = target["name"]
@@ -202,11 +222,14 @@ def sweep(cfg, state):
                 alert(name, fresh, cfg)
         # 회차가 하나도 없는 날짜 = 예매가 아직 안 열린 날. 빠른 감시는 여기만 본다.
         state[name] = {"shows": shows, "empty": [y for y in ymds if y not in seen]}
+    state.setdefault("__meta__", {})["last_sweep"] = time.time()
     save_state(state)
 
 
 def fast_check(cfg, state):
     """아직 안 열린 날짜만 훑는다. 응답이 비어 있어 한 건당 ~80ms."""
+    if cooling():
+        return
     hit = False
     for target in cfg["targets"]:
         name = target["name"]
@@ -261,6 +284,8 @@ def notices(cfg, state):
     회차가 실제로 열리는 순간(sweep/fast_check)과 달리, 이쪽은 "O월 O일 O시 오픈"
     같은 사전 공고를 잡는다. 둘은 다른 사건이라 채널도 따로 둘 수 있다.
     """
+    if cooling():
+        return
     conf = cfg.get("notices") or {}
     words = conf.get("keywords") or []
     if not words:
@@ -355,8 +380,34 @@ def selftest():
     assert len(fresh) == 2 and "팝콘" not in " ".join(fresh)
     assert [r for r in rows if r["evntNo"] not in seen] == [], "두 번째 순회에선 신규 없음"
 
+    # 재시작 시 스윕 타이밍: 오래됐으면 즉시, 신선하면 남은 시간만큼 대기
+    def plan(age, every):
+        return "즉시" if age >= every else int(every - age)
+    assert plan(0, 1800) == 1800 and plan(1700, 1800) == 100
+    assert plan(1800, 1800) == "즉시" and plan(99999, 1800) == "즉시"
+
     assert window(3)[0] == date.today().strftime("%Y%m%d")
     assert len(window(21)) == 21
+
+    # 429 백오프: 한 번 맞으면 그 뒤 요청은 아예 나가지 않아야 한다
+    # (__main__ 로 실행되므로 import 말고 이 모듈의 전역을 직접 다룬다)
+    g = globals()
+    saved = (g["_cool_until"], g["_cool_step"], g["get"])
+    try:
+        g["_cool_step"], g["_cool_until"] = 1, time.monotonic() + 30
+        assert cooling(), "429 직후에는 쉬어야 함"
+        calls = []
+        g["get"] = lambda *a, **k: calls.append(1)
+        fast_check({"targets": [{"name": "x", "site_no": "0", "screens": []}]},
+                   {"x": {"shows": {}, "empty": ["20260901"]}})
+        sweep({"targets": [{"name": "x", "site_no": "0"}], "days_ahead": 1}, {})
+        notices({"notices": {"keywords": ["예매"]}}, {})
+        assert calls == [], "쉬는 동안 요청이 나가면 안 됨"
+        g["_cool_until"] = 0.0
+        assert not cooling(), "시간이 지나면 재개"
+        assert [30 * 2 ** (n - 1) for n in range(1, 6)] == [30, 60, 120, 240, 480]
+    finally:
+        g["_cool_until"], g["_cool_step"], g["get"] = saved
 
     live = get("booking/searchRegnList")
     assert any(s["siteNm"] == "용산아이파크몰" for r in live for s in r["siteList"])
@@ -379,9 +430,16 @@ if __name__ == "__main__":
         fast_every = config.get("fast_seconds", 10)
         log(f"감시 시작: {[t['name'] for t in config['targets']]}")
         log(f"전체 {full_every}초 / 빠른 감시 {fast_every}초")
-        # time.monotonic() 은 부팅 후 경과 초라, 갓 부팅한 서버에서는 값이 작다.
-        # 0 으로 두면 첫 스윕이 poll_seconds 만큼 늦어진다. -inf 면 항상 즉시 실행.
-        last_full = float("-inf")
+        # 전체 스윕은 126요청 25MB 로 무겁다. 재배포로 자주 재시작하면 이게 겹쳐
+        # 429 를 부른다. 직전 스윕이 아직 신선하면 남은 시간만큼 미룬다.
+        # monotonic() 은 부팅 후 경과 초라 0 으로 두면 갓 부팅한 서버에서 첫 스윕이
+        # 통째로 늦어지므로, 오래됐으면 -inf 로 즉시 실행시킨다.
+        age = time.time() - saved.get("__meta__", {}).get("last_sweep", 0)
+        if age >= full_every:
+            last_full = float("-inf")
+        else:
+            last_full = time.monotonic() - (full_every - age)
+            log(f"직전 스윕 {int(age)}초 전 — 다음 스윕까지 {int(full_every - age)}초 대기")
         last_ntc = float("-inf")
         ntc_every = config.get("notice_seconds", 300)
         while True:
