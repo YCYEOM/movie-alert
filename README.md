@@ -89,6 +89,24 @@ sudo vi /etc/movie-alert.env          # 웹훅/토큰 변경
 
 상태 파일은 `/var/lib/movie-alert/state.json`에 둡니다. 저장소 안에 두면 `git pull`이 깨집니다.
 
+### 하트비트
+
+하루 한 번 감시 현황을 보냅니다.
+
+```
+🟢 감시 중
+용산아이파크몰 168건 · 09/08까지
+여의도 28건 · 09/01까지
+```
+
+**이게 안 오면 감시가 죽은 것입니다.** 오라클 무료 인스턴스는 7일간 CPU·네트워크 사용률이
+20% 미만이면 회수될 수 있는데([공식 문서](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)),
+이 프로그램은 그 조건에 정확히 해당합니다. 조용히 사라지는 걸 알아채기 위한 장치입니다.
+
+`heartbeat_hours`를 `0`으로 두면 끕니다. 부재를 직접 알아차려야 하는 게 부담이면
+[healthchecks.io](https://healthchecks.io) 같은 데드맨 스위치를 붙이는 편이 확실합니다 —
+핑이 끊기면 그쪽에서 먼저 알려줍니다.
+
 ### 감지 속도
 
 서울에서 잰 값입니다. 연결을 재사용하면 요청당 84ms이고, 빠른 감시 1주기(6극장 × 2일 = 12요청)가 약 0.8초입니다.

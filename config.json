@@ -3,6 +3,7 @@
   "fast_seconds": 3,
   "fast_dates": 2,
   "days_ahead": 21,
+  "heartbeat_hours": 24,
   "targets": [
     {
       "name": "용산아이파크몰",

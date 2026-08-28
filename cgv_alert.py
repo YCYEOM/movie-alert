@@ -223,6 +223,31 @@ def fast_check(cfg, state):
         save_state(state)
 
 
+def heartbeat(cfg, state):
+    """하루 한 번 생존 신호. 이게 끊기면 감시가 죽은 것이다.
+
+    오라클 무료 인스턴스는 7일간 CPU/네트워크가 20% 미만이면 회수될 수 있는데,
+    이 프로그램은 그 조건에 정확히 해당한다. 조용히 사라지는 걸 막는 장치.
+    """
+    hours = cfg.get("heartbeat_hours", 24)
+    if not hours:
+        return
+    meta = state.setdefault("__meta__", {})
+    if time.time() - meta.get("last", 0) < hours * 3600:
+        return
+    lines = []
+    for target in cfg["targets"]:
+        entry = state.get(target["name"])
+        if not entry:
+            continue
+        days = sorted({k[:8] for k in entry["shows"]})
+        upto = f'{days[-1][4:6]}/{days[-1][6:]}까지' if days else '없음'
+        lines.append(f'{target["name"]} {len(entry["shows"])}건 · {upto}')
+    send("🟢 감시 중\n" + "\n".join(lines), cfg.get("notify", {}))
+    meta["last"] = time.time()
+    save_state(state)
+
+
 def save_state(state):
     with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False)
@@ -279,7 +304,7 @@ if __name__ == "__main__":
     else:
         config = load_config()
         saved = load_state()
-        if any("shows" not in v for v in saved.values()):
+        if any("shows" not in v for k, v in saved.items() if k != "__meta__"):
             saved = {}  # 옛 형식이면 기준선부터 다시 (알림 없음)
         full_every = config.get("poll_seconds", 300)
         fast_every = config.get("fast_seconds", 10)
@@ -289,6 +314,7 @@ if __name__ == "__main__":
         while True:
             if time.monotonic() - last_full >= full_every:
                 sweep(config, saved)
+                heartbeat(config, saved)
                 last_full = time.monotonic()
                 if arg == "--once":
                     break
