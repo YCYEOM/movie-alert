@@ -144,6 +144,54 @@ def scan(target, ymds, pause):
     return found
 
 
+DOW = "월화수목금토일"
+
+
+def render(name, keys):
+    """회차 키를 날짜 > 상영관 > 영화 로 묶어 읽기 좋은 문구로 만든다.
+
+    한 회차에 한 줄씩 뿌리면 오픈 한 번에 수십 줄이라 디스코드에서 안 읽힌다.
+    상영관을 위에 두는 건 "IMAX 열렸나"가 가장 먼저 보고 싶은 것이기 때문.
+    """
+    days = {}
+    for k in keys:
+        ymd, scns, prod, t = k.split("|")
+        m = re.match(r"^(.*)\(([^()]*)\)$", prod)  # 제목 끝 괄호가 상영 포맷
+        title, fmt = (m.group(1).strip(), m.group(2)) if m else (prod, "")
+        days.setdefault(ymd, {}).setdefault(scns, {}).setdefault((title, fmt), []).append(t)
+    lines = [f"**{name} 예매 오픈** · {len(days)}일 {len(keys)}회차"]
+    for ymd in sorted(days):
+        wd = DOW[date(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:])).weekday()]
+        lines.append(f"\n**{ymd[4:6]}/{ymd[6:]}({wd})**")
+        rooms = days[ymd]
+        for scns in sorted(rooms, key=lambda s: min(min(v) for v in rooms[s].values())):
+            lines.append(f"▸ **{scns}**")
+            for (title, fmt), ts in sorted(rooms[scns].items(), key=lambda x: min(x[1])):
+                lines.append(f"　{title} · {fmt}" if fmt else f"　{title}")
+                lines.append("　　" + "  ".join(f"{t[:2]}:{t[2:]}" for t in sorted(ts)))
+    return "\n".join(lines)
+
+
+def chunks(text, limit=1900):
+    """디스코드 한도에 맞춰 자르되 줄 중간에서 끊지 않는다. 한 줄이 한도를
+    넘으면 그때만 쪼갠다 — 버리지는 않는다."""
+    out, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            out.append(cur)
+            cur = ""
+        cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        out.append(cur)
+    return out or [""]
+
+
 def send(text, cfg, env="DISCORD_WEBHOOK_URL"):
     """설정된 채널로 전송. Discord 와 Telegram 둘 다 켜져 있으면 둘 다 보낸다."""
     # 공고용 채널을 따로 안 만들었으면 기본 채널로 보낸다 (안 보내는 것보다 낫다)
@@ -154,7 +202,7 @@ def send(text, cfg, env="DISCORD_WEBHOOK_URL"):
     if not discord and not token:
         log(f"(알림 채널 미설정) {text}")
         return
-    for chunk in [text[i : i + 1900] for i in range(0, len(text), 1900)]:
+    for chunk in chunks(text):
         if discord:
             post(discord, {"content": chunk})
         if token and chat:
@@ -195,7 +243,7 @@ def load_state():
 
 def alert(name, fresh, cfg):
     log(f"{name} 신규 {len(fresh)}건")
-    send(f"**{name} 예매 오픈**\n" + "\n".join(sorted(fresh)), cfg.get("notify", {}))
+    send(render(name, fresh), cfg.get("notify", {}))
 
 
 def sweep(cfg, state):
@@ -222,7 +270,7 @@ def sweep(cfg, state):
         if entry is None:
             log(f"{name} 기준선 {len(shows)}건 (첫 실행이라 알림 없음)")
         else:
-            fresh = [shows[k] for k in shows if k not in entry["shows"]]
+            fresh = [k for k in shows if k not in entry["shows"]]
             log(f"{name} 전체 {len(shows)}건 (신규 {len(fresh)}건)")
             if fresh:
                 alert(name, fresh, cfg)
@@ -260,7 +308,7 @@ def fast_check(cfg, state):
                     shows.update(scan(target, rest, pause=0.1))
                 except (urllib.error.URLError, OSError, ValueError) as exc:
                     log(f"{name} 잔여 날짜 조회 실패: {exc}")
-        fresh = [shows[k] for k in shows if k not in entry["shows"]]
+        fresh = [k for k in shows if k not in entry["shows"]]
         if fresh:
             alert(name, fresh, cfg)
             entry["shows"].update(shows)
@@ -358,11 +406,30 @@ def selftest():
 
     prev = {"a": "1", "b": "2"}
     cur = {"b": "2", "c": "3"}
-    assert [cur[k] for k in cur if k not in prev] == ["3"], "신규만 잡아야 함"
+    assert [k for k in cur if k not in prev] == ["c"], "신규만 잡아야 함"
     assert [k for k in prev if k not in cur] == ["a"]  # 사라진 건 알리지 않음
 
-    long_text = "가" * 4000
-    assert len([long_text[i : i + 1900] for i in range(0, len(long_text), 1900)]) == 3
+    # 분할: 한도를 넘는 한 줄은 쪼개되 버리지 않는다
+    assert len(chunks("가" * 4000)) == 3
+    assert "".join(chunks("가" * 4000)) == "가" * 4000, "쪼개도 내용은 보존"
+    body = "\n".join(f"{i:04d}번 줄 " + "가" * 40 for i in range(200))
+    parts = chunks(body)
+    assert len(parts) > 1 and all(len(c) <= 1900 for c in parts)
+    assert "\n".join(parts) == body, "줄 경계에서만 끊겨야 함"
+
+    # 알림 묶기: 같은 관·같은 영화면 시각이 한 줄에 모인다
+    keys = ["20260902|IMAX관|오디세이(IMAX LASER 2D)|0730",
+            "20260902|IMAX관|오디세이(IMAX LASER 2D)|1100",
+            "20260902|4DX관|스파이더맨(ULTRA 4DX 2D)|1300",
+            "20260903|IMAX관|오디세이(IMAX LASER 2D)|0730"]
+    out = render("용산", keys)
+    assert "07:30  11:00" in out, "같은 관·영화의 시각은 한 줄에"
+    assert out.count("▸ **IMAX관**") == 2, "날짜마다 관 머리글"
+    assert "09/02(수)" in out and "09/03(목)" in out, "날짜에 요일"
+    assert "오디세이 · IMAX LASER 2D" in out, "제목과 포맷을 나눠서"
+    assert "2일 4회차" in out
+    # 괄호 없는 제목도 깨지지 않아야 한다
+    assert render("x", ["20260902|IMAX관|무제|0730"]).endswith("07:30")
 
     # 빈 날짜(=예매 미오픈) 판정: 회차 키의 앞 8자리가 날짜다
     ymds = ["20260901", "20260902", "20260903"]
@@ -373,7 +440,7 @@ def selftest():
     # 빠른 감시가 오픈을 잡으면 그 날짜는 빈 목록에서 빠져야 한다
     entry = {"shows": dict(shows), "empty": ["20260902", "20260903"]}
     found = {"20260902|IMAX관|영화|1200": "y"}
-    assert [found[k] for k in found if k not in entry["shows"]] == ["y"]
+    assert [k for k in found if k not in entry["shows"]] == ["20260902|IMAX관|영화|1200"]
     entry["shows"].update(found)
     opened = {k.split("|")[0] for k in found}
     entry["empty"] = [y for y in entry["empty"] if y not in opened]
@@ -404,10 +471,11 @@ def selftest():
     rest = [y for y in empty if y not in watch]
     assert rest == ["20260912", "20260913"], "앞 2일 외 나머지를 마저 봐야 함"
     seen_shows = {}
-    found = {f"{y}|IMAX관|영화|1000": f"{y[4:6]}/{y[6:]} 10:00 영화 — IMAX관" for y in empty}
-    fresh = [found[k] for k in found if k not in seen_shows]
+    found = {f"{y}|IMAX관|영화(IMAX 2D)|1000": "x" for y in empty}
+    fresh = [k for k in found if k not in seen_shows]
     assert len(fresh) == 4, "4일치가 한 통에 담겨야 함"
-    assert sorted(fresh)[0].startswith("09/10") and sorted(fresh)[-1].startswith("09/13")
+    one = render("용산", fresh)
+    assert "4일 4회차" in one and "09/10(목)" in one and "09/13(일)" in one
 
     # 재시작 시 스윕 타이밍: 오래됐으면 즉시, 신선하면 남은 시간만큼 대기
     def plan(age, every):
