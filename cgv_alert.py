@@ -130,18 +130,31 @@ def fetch_day(site_no, ymd, wanted):
     return found
 
 
-def window(days):
-    today = date.today()
-    return [(today + timedelta(days=n)).strftime("%Y%m%d") for n in range(days)]
+# 설정의 상영관 이름 -> 예매가능 영화목록 API 의 attrCd.
+# 이 목록은 siteNo 없이 CGV 전체에서 그 특별관으로 지금 예매되는 영화를 준다(222~750B).
+# 아바타가 IMAX 목록에 뜨는 순간이 곧 IMAX 예매 오픈이다.
+SPECIAL_ATTR = {"아이맥스": "04", "IMAX": "04", "4DX": "03",
+                "SCREENX": "08", "돌비": "06", "DOLBY ATMOS": "06"}
+ATTR_NM = {"04": "IMAX", "03": "4DX", "08": "SCREENX", "06": "DOLBY ATMOS"}
 
 
-def scan(target, ymds, pause):
-    found = {}
-    for ymd in ymds:
-        found.update(fetch_day(target["site_no"], ymd, target.get("screens", [])))
-        if pause:
-            time.sleep(pause)
-    return found
+def movie_list(attr):
+    """그 특별관으로 지금 예매 가능한 영화 이름. 요청 1건."""
+    rows = get("booking/searchAtktTopPostrList",
+               movNm="", div="CUST_EXPO_MOVTYP_CD", attrCd=attr)
+    return {r["movNm"] for r in rows}
+
+
+def site_dates(site_no, cap):
+    """그 극장에 상영 일정이 잡힌 날짜. 요청 1건.
+
+    회차 API 와 달리 scnYmd 가 필요 없다. 예매가 열리기 전에도 날짜가 먼저 뜨므로
+    사전 신호로 쓸 수 있고, 21일 같은 임의의 창을 둘 필요도 없어진다.
+    """
+    today = date.today().strftime("%Y%m%d")
+    last = (date.today() + timedelta(days=cap)).strftime("%Y%m%d")
+    return [r["scnYmd"] for r in get("booking/searchSiteScnscYmdListBySite", siteNo=site_no)
+            if today <= r["scnYmd"] <= last]
 
 
 DOW = "월화수목금토일"
@@ -246,77 +259,141 @@ def alert(name, fresh, cfg):
     send(render(name, fresh), cfg.get("notify", {}))
 
 
-def sweep(cfg, state):
-    """전체 창을 훑어 기준선을 다시 잡고, 비어 있는 날짜 목록을 갱신한다.
+def entry_of(state, name):
+    return state.setdefault(name, {"shows": {}, "dates": [], "seen": []})
 
-    ponytail: 스윕이 도는 ~50초 동안은 빠른 감시가 멈춘다(사각지대). 주기를 30분으로
-    두어 노출을 시간당 2회로 줄였다. 이마저 아까우면 (극장, 날짜) 하나씩 빠른 감시
-    사이에 끼워 넣는 커서 방식으로 바꾸면 사각지대가 사라진다.
-    """
-    if cooling():
-        return
-    ymds = window(cfg.get("days_ahead", 21))
-    for target in cfg["targets"]:
-        name = target["name"]
-        try:
-            shows = scan(target, ymds, pause=0.3)
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            log(f"{name} 전체조회 실패: {exc}")
-            if cooling():
-                return  # 제한에 걸렸으면 나머지 극장은 시도하지 않는다
-            continue
-        seen = {y for y in ymds if any(k.startswith(y) for k in shows)}
-        entry = state.get(name)
-        if entry is None:
-            log(f"{name} 기준선 {len(shows)}건 (첫 실행이라 알림 없음)")
-        else:
-            fresh = [k for k in shows if k not in entry["shows"]]
-            log(f"{name} 전체 {len(shows)}건 (신규 {len(fresh)}건)")
-            if fresh:
-                alert(name, fresh, cfg)
-        # 회차가 하나도 없는 날짜 = 예매가 아직 안 열린 날. 빠른 감시는 여기만 본다.
-        state[name] = {"shows": shows, "empty": [y for y in ymds if y not in seen]}
-    state.setdefault("__meta__", {})["last_sweep"] = time.time()
+
+def target_of(cfg, name):
+    return next(t for t in cfg["targets"] if t["name"] == name)
+
+
+def report(cfg, state, name, found):
+    """찾은 회차 중 처음 보는 것만 알리고 스냅샷에 합친다."""
+    entry = entry_of(state, name)
+    fresh = [k for k in found if k not in entry["shows"]]
+    if fresh:
+        alert(name, fresh, cfg)
+    entry["shows"].update(found)
     save_state(state)
 
 
-def fast_check(cfg, state):
-    """아직 안 열린 날짜만 훑는다. 응답이 비어 있어 한 건당 ~80ms."""
-    if cooling():
-        return
-    hit = False
+def rush(cfg, state, attr, movies):
+    """특별관 예매가 열린 순간. 드문 사건이라 이때만 몰아서 훑는다.
+
+    평소에 요청을 아끼는 이유가 바로 이 순간에 마음껏 쓰기 위해서다.
+    """
     for target in cfg["targets"]:
+        if attr not in {SPECIAL_ATTR.get(s) for s in target.get("screens", [])}:
+            continue
         name = target["name"]
-        entry = state.get(name)
-        if not entry or not entry["empty"]:
-            continue
-        watch = entry["empty"][: cfg.get("fast_dates", 3)]
+        found = {}
+        for ymd in entry_of(state, name)["dates"] or []:
+            try:
+                found.update(fetch_day(target["site_no"], ymd, target.get("screens", [])))
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                log(f"{name} 긴급조회 중단: {exc}")
+                break
+            time.sleep(0.2)
+        report(cfg, state, name, found)
+
+
+def tripwire(cfg, state, item):
+    """요청 1건짜리 감시. 변화가 보이면 그때만 회차를 펼쳐본다."""
+    kind, key = item
+    if kind == "movies":
+        seen = state.setdefault("__movies__", {})
         try:
-            shows = scan(target, watch, pause=0)
+            now = movie_list(key)
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            log(f"{name} 빠른조회 실패: {exc}")
-            if cooling():
-                break  # 제한에 걸렸으면 나머지 극장은 시도하지 않는다
-            continue
-        if any(k not in entry["shows"] for k in shows):
-            # 예매는 보통 여러 날이 한꺼번에 열린다. 앞 2일에서 낌새를 챘으면
-            # 남은 미오픈 날짜까지 마저 훑어서 한 통으로 알린다.
-            # 오픈은 드문 사건이라 요청이 늘어나는 것도 그때뿐이다.
-            rest = [y for y in entry["empty"] if y not in watch]
-            if rest:
-                try:
-                    shows.update(scan(target, rest, pause=0.1))
-                except (urllib.error.URLError, OSError, ValueError) as exc:
-                    log(f"{name} 잔여 날짜 조회 실패: {exc}")
-        fresh = [k for k in shows if k not in entry["shows"]]
-        if fresh:
-            alert(name, fresh, cfg)
-            entry["shows"].update(shows)
-            opened = {k.split("|")[0] for k in shows}
-            entry["empty"] = [y for y in entry["empty"] if y not in opened]
-            hit = True
-    if hit:
+            log(f"{ATTR_NM.get(key, key)} 영화목록 실패: {exc}")
+            return
+        was = set(seen.get(key) or [])
+        if was == now:
+            return
+        seen[key] = sorted(now)
         save_state(state)
+        if not was:
+            log(f"{ATTR_NM.get(key, key)} 기준선 {len(now)}편")
+            return
+        fresh = now - was
+        if fresh:
+            log(f"{ATTR_NM.get(key, key)} 신규 예매 가능: {', '.join(sorted(fresh))}")
+            rush(cfg, state, key, fresh)
+        return
+
+    target = target_of(cfg, key)
+    entry = entry_of(state, key)
+    try:
+        now = site_dates(target["site_no"], cfg.get("days_ahead", 60))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        log(f"{key} 날짜목록 실패: {exc}")
+        return
+    was = set(entry["dates"] or [])
+    if was == set(now) and entry["dates"]:
+        return
+    entry["dates"] = now
+    save_state(state)
+    fresh = [y for y in now if y not in was]
+    if not was or not fresh:
+        return
+    log(f"{key} 새 날짜 {len(fresh)}건: {', '.join(fresh)}")
+    found = {}
+    for ymd in fresh:
+        try:
+            found.update(fetch_day(target["site_no"], ymd, target.get("screens", [])))
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            log(f"{key} 신규날짜 조회 중단: {exc}")
+            break
+        time.sleep(0.2)
+    report(cfg, state, key, found)
+
+
+def scan_pair(cfg, state, pair):
+    """(극장, 날짜) 한 쌍만 훑는다. 전체 스윕을 tick 단위로 흩뿌린 것.
+
+    한꺼번에 126요청을 쏘면 그 순간 레이트리밋에 걸린다(실제로 걸렸다). 같은
+    총량을 한 번에 1건씩 나눠 쓰면 폭주 구간이 사라지고 사각지대도 없어진다.
+    """
+    name, ymd = pair
+    target = target_of(cfg, name)
+    entry = entry_of(state, name)
+    try:
+        day = fetch_day(target["site_no"], ymd, target.get("screens", []))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        log(f"{name} {ymd} 실패: {exc}")
+        return
+    first = ymd not in entry["seen"]
+    was = {k for k in entry["shows"] if k.startswith(ymd)}
+    if set(day) == was and not first:
+        return  # 그대로면 쓸 것도 알릴 것도 없다
+    if first:
+        entry["seen"].append(ymd)
+    fresh = [k for k in day if k not in entry["shows"]]
+    # 그 날짜의 옛 키는 지우고 새로 채운다. 사라진 회차는 알리지 않는다.
+    for k in was:
+        del entry["shows"][k]
+    entry["shows"].update(day)
+    if fresh and not first:
+        alert(name, fresh, cfg)
+    save_state(state)
+
+
+def build_plan(cfg):
+    """트립와이어 순회 목록: 특별관 영화목록들 + 극장 날짜목록들."""
+    attrs = []
+    for target in cfg["targets"]:
+        for screen in target.get("screens", []):
+            attr = SPECIAL_ATTR.get(screen)
+            if attr and attr not in attrs:
+                attrs.append(attr)
+    return [("movies", a) for a in attrs] + [("dates", t["name"]) for t in cfg["targets"]]
+
+
+def sweep_pairs(cfg, state):
+    """훑을 (극장, 날짜) 전체. 날짜목록이 알려준 실제 날짜만 돈다."""
+    return [(t["name"], ymd)
+            for t in cfg["targets"]
+            for ymd in entry_of(state, t["name"])["dates"] or []]
 
 
 def heartbeat(cfg, state):
@@ -431,25 +508,6 @@ def selftest():
     # 괄호 없는 제목도 깨지지 않아야 한다
     assert render("x", ["20260902|IMAX관|무제|0730"]).endswith("07:30")
 
-    # 빈 날짜(=예매 미오픈) 판정: 회차 키의 앞 8자리가 날짜다
-    ymds = ["20260901", "20260902", "20260903"]
-    shows = {"20260901|IMAX관|영화|1000": "x"}
-    seen = {y for y in ymds if any(k.startswith(y) for k in shows)}
-    assert [y for y in ymds if y not in seen] == ["20260902", "20260903"]
-
-    # 빠른 감시가 오픈을 잡으면 그 날짜는 빈 목록에서 빠져야 한다
-    entry = {"shows": dict(shows), "empty": ["20260902", "20260903"]}
-    found = {"20260902|IMAX관|영화|1200": "y"}
-    assert [k for k in found if k not in entry["shows"]] == ["20260902|IMAX관|영화|1200"]
-    entry["shows"].update(found)
-    opened = {k.split("|")[0] for k in found}
-    entry["empty"] = [y for y in entry["empty"] if y not in opened]
-    assert entry["empty"] == ["20260903"], "열린 날짜는 빠른 감시 대상에서 빠져야 함"
-
-    # 갓 부팅한 서버(monotonic 이 작음)에서도 첫 스윕이 즉시 돌아야 한다
-    for uptime in (5.0, 90.0, 999999.0):
-        assert uptime - float("-inf") >= 1800, "첫 회는 무조건 전체 스윕"
-
     # 공고 필터: 키워드가 든 것만, 그리고 한 번 본 것은 다시 알리지 않는다
     pat = re.compile("|".join(re.escape(w) for w in ["예매", "IMAX", "SCREENX"]), re.IGNORECASE)
     rows = [{"evntNo": "1", "evntNm": "[오디세이] IMAX N차 관람 이벤트"},
@@ -465,26 +523,49 @@ def selftest():
     assert len(fresh) == 2 and "팝콘" not in " ".join(fresh)
     assert [r for r in rows if r["evntNo"] not in seen] == [], "두 번째 순회에선 신규 없음"
 
-    # 오픈 감지 시 남은 미오픈 날짜까지 합쳐 한 통으로 알린다
-    empty = ["20260910", "20260911", "20260912", "20260913"]
-    watch = empty[:2]
-    rest = [y for y in empty if y not in watch]
-    assert rest == ["20260912", "20260913"], "앞 2일 외 나머지를 마저 봐야 함"
-    seen_shows = {}
-    found = {f"{y}|IMAX관|영화(IMAX 2D)|1000": "x" for y in empty}
-    fresh = [k for k in found if k not in seen_shows]
-    assert len(fresh) == 4, "4일치가 한 통에 담겨야 함"
-    one = render("용산", fresh)
-    assert "4일 4회차" in one and "09/10(목)" in one and "09/13(일)" in one
+    cfg = {"targets": [
+        {"name": "용산", "site_no": "0013", "screens": ["아이맥스", "4DX"]},
+        {"name": "서면", "site_no": "0005", "screens": ["아이맥스"]},
+    ]}
+    # 트립와이어 순회: 특별관은 중복 제거, 극장은 전부
+    assert build_plan(cfg) == [("movies", "04"), ("movies", "03"),
+                               ("dates", "용산"), ("dates", "서면")]
+    # 요청량: tick 당 1건이고, 스윕 share 만큼마다 트립와이어 1건
+    share = 2
+    kinds = ["트립" if n % (share + 1) == 0 else "스윕" for n in range(9)]
+    assert kinds.count("트립") == 3 and kinds.count("스윕") == 6
 
-    # 재시작 시 스윕 타이밍: 오래됐으면 즉시, 신선하면 남은 시간만큼 대기
-    def plan(age, every):
-        return "즉시" if age >= every else int(every - age)
-    assert plan(0, 1800) == 1800 and plan(1700, 1800) == 100
-    assert plan(1800, 1800) == "즉시" and plan(99999, 1800) == "즉시"
+    # 스윕 커서는 날짜목록이 준 실제 날짜만 돈다 (21일 같은 임의 창이 없다)
+    st = {"용산": {"shows": {}, "dates": ["20260902", "20261009"], "seen": []},
+          "서면": {"shows": {}, "dates": ["20260902"], "seen": []}}
+    assert sweep_pairs(cfg, st) == [("용산", "20260902"), ("용산", "20261009"),
+                                    ("서면", "20260902")], "먼 날짜도 포함"
 
-    assert window(3)[0] == date.today().strftime("%Y%m%d")
-    assert len(window(21)) == 21
+    # 첫 방문 날짜는 기준선만 잡고 알리지 않는다. 두 번째부터 신규를 알린다.
+    e = {"shows": {}, "dates": ["20260902"], "seen": []}
+    day1 = {"20260902|IMAX관|오디세이(IMAX 2D)|1000": "x"}
+    first = "20260902" not in e["seen"]
+    assert first, "처음 보는 날짜"
+    e["seen"].append("20260902")
+    e["shows"].update(day1)
+    day2 = dict(day1, **{"20260902|IMAX관|아바타(IMAX 2D)|1400": "y"})
+    again = [k for k in day2 if k not in e["shows"]]
+    assert "20260902" in e["seen"] and again == ["20260902|IMAX관|아바타(IMAX 2D)|1400"], \
+        "이미 열린 날짜에 붙은 회차를 잡아야 함 (8/28~8/31 실측 43건이 이 경우)"
+
+    # 같은 날짜를 다시 훑으면 그 날짜의 옛 키는 지우고 새로 채운다
+    e["shows"].update(day2)
+    shrunk = {"20260902|IMAX관|오디세이(IMAX 2D)|1000": "x"}
+    for k in [k for k in e["shows"] if k.startswith("20260902")]:
+        del e["shows"][k]
+    e["shows"].update(shrunk)
+    assert e["shows"] == shrunk, "사라진 회차는 조용히 빠진다"
+
+    # 특별관 영화목록 트립와이어: 새 영화가 뜨면 그게 곧 예매 오픈
+    was, now = {"오디세이"}, {"오디세이", "아바타-불과 재"}
+    assert now - was == {"아바타-불과 재"}
+    assert not ({"오디세이"} - {"오디세이", "아바타-불과 재"}), "빠진 영화는 알리지 않음"
+    assert SPECIAL_ATTR["아이맥스"] == "04" and ATTR_NM["04"] == "IMAX"
 
     # 429 백오프: 한 번 맞으면 그 뒤 요청은 아예 나가지 않아야 한다
     # (__main__ 로 실행되므로 import 말고 이 모듈의 전역을 직접 다룬다)
@@ -495,11 +576,11 @@ def selftest():
         assert cooling(), "429 직후에는 쉬어야 함"
         calls = []
         g["get"] = lambda *a, **k: calls.append(1)
-        fast_check({"targets": [{"name": "x", "site_no": "0", "screens": []}]},
-                   {"x": {"shows": {}, "empty": ["20260901"]}})
-        sweep({"targets": [{"name": "x", "site_no": "0"}], "days_ahead": 1}, {})
         notices({"notices": {"keywords": ["예매"]}}, {})
         assert calls == [], "쉬는 동안 요청이 나가면 안 됨"
+        # tick 루프는 쉬는 동안 어떤 일도 배차하지 않는다
+        assert not [x for x in ["배차"] if not cooling()], "쉬면 tick 은 빈손"
+        g["get"] = saved[2]  # 진짜 get 으로 되돌려 놓고 확인
         # 쉬는 중 get() 은 네트워크에 나가지 않고 단계도 올리지 않아야 한다
         before = g["_cool_step"]
         for _ in range(6):
@@ -507,6 +588,12 @@ def selftest():
                 get("booking/searchRegnList")
             except urllib.error.HTTPError as exc:
                 assert exc.code == 429
+        # 트립와이어와 스윕은 429 를 삼키고 단계도 건드리지 않아야 한다
+        one = {"targets": [{"name": "x", "site_no": "0", "screens": ["아이맥스"]}]}
+        tripwire(one, {}, ("movies", "04"))
+        tripwire(one, {"x": {"shows": {}, "dates": [], "seen": []}}, ("dates", "x"))
+        scan_pair(one, {"x": {"shows": {}, "dates": ["20260901"], "seen": []}},
+                  ("x", "20260901"))
         assert g["_cool_step"] == before, "쉬는 중 호출로 단계가 오르면 안 됨"
 
         g["_cool_until"] = 0.0
@@ -530,34 +617,37 @@ if __name__ == "__main__":
     else:
         config = load_config()
         saved = load_state()
-        if any("shows" not in v for k, v in saved.items() if not k.startswith("__")):
+        if any("dates" not in v for k, v in saved.items() if not k.startswith("__")):
             saved = {}  # 옛 형식이면 기준선부터 다시 (알림 없음)
-        full_every = config.get("poll_seconds", 300)
-        fast_every = config.get("fast_seconds", 10)
-        log(f"감시 시작: {[t['name'] for t in config['targets']]}")
-        log(f"전체 {full_every}초 / 빠른 감시 {fast_every}초")
-        # 전체 스윕은 126요청 25MB 로 무겁다. 재배포로 자주 재시작하면 이게 겹쳐
-        # 429 를 부른다. 직전 스윕이 아직 신선하면 남은 시간만큼 미룬다.
-        # monotonic() 은 부팅 후 경과 초라 0 으로 두면 갓 부팅한 서버에서 첫 스윕이
-        # 통째로 늦어지므로, 오래됐으면 -inf 로 즉시 실행시킨다.
-        age = time.time() - saved.get("__meta__", {}).get("last_sweep", 0)
-        if age >= full_every:
-            last_full = float("-inf")
-        else:
-            last_full = time.monotonic() - (full_every - age)
-            log(f"직전 스윕 {int(age)}초 전 — 다음 스윕까지 {int(full_every - age)}초 대기")
-        last_ntc = float("-inf")
+        tick = config.get("tick_seconds", 1.0)
+        share = config.get("sweep_per_tripwire", 2)
+        plan = build_plan(config)
         ntc_every = config.get("notice_seconds", 300)
+        log(f"감시 시작: {[t['name'] for t in config['targets']]}")
+        log(f"tick {tick}초 · 트립와이어 {len(plan)}종 · 스윕 {share}틱당 1종 "
+            f"(약 {1 / tick:.1f} req/s)")
+        last_ntc = float("-inf")
+        pi = si = n = 0
+        pairs = []
         while True:
-            if time.monotonic() - last_ntc >= ntc_every:
-                notices(config, saved)
-                last_ntc = time.monotonic()
-            if time.monotonic() - last_full >= full_every:
-                sweep(config, saved)
+            # 쉬는 중엔 요청을 아예 만들지 않는다. tick 만 흘려보낸다.
+            if not cooling():
+                if time.monotonic() - last_ntc >= ntc_every:
+                    notices(config, saved)
+                    last_ntc = time.monotonic()
+                elif n % (share + 1) == 0 and plan:
+                    tripwire(config, saved, plan[pi % len(plan)])
+                    pi += 1
+                else:
+                    if not pairs:
+                        pairs, si = sweep_pairs(config, saved), 0
+                    if pairs:
+                        scan_pair(config, saved, pairs[si % len(pairs)])
+                        si += 1
+                        if si >= len(pairs):  # 한 바퀴 돌면 날짜목록을 다시 읽는다
+                            pairs = []
                 heartbeat(config, saved)
-                last_full = time.monotonic()
-                if arg == "--once":
-                    break
-            else:
-                fast_check(config, saved)
-            time.sleep(fast_every)
+                n += 1
+            if arg == "--once" and n > len(plan) + 2:
+                break
+            time.sleep(tick)

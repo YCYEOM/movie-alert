@@ -1,8 +1,7 @@
 {
-  "poll_seconds": 1800,
-  "fast_seconds": 4,
-  "fast_dates": 2,
-  "days_ahead": 21,
+  "tick_seconds": 1.0,
+  "sweep_per_tripwire": 2,
+  "days_ahead": 60,
   "heartbeat_hours": 24,
   "notice_seconds": 300,
   "targets": [
