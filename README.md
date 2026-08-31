@@ -48,6 +48,16 @@ GET https://cgv.co.kr/api/v1/booking/searchMovScnInfo
 
 **`Referer` 헤더가 필수입니다.** 없으면 Cloudflare WAF가 403을 돌려줍니다.
 
+**403 을 봤다면 먼저 HTTP 버전을 의심하세요.** CGV 앞단은 curl 의 HTTP/2 지문을 막습니다.
+IP·헤더와 무관하게 `curl` 기본값(HTTP/2)은 항상 403 이고, `curl --http1.1` 은 200 입니다.
+파이썬 `http.client` 는 HTTP/1.1 전용이라 이 프로그램은 영향을 받지 않습니다.
+차단 여부를 확인할 때 `curl` 기본값으로 재면 멀쩡한 IP도 차단된 것처럼 보입니다.
+
+```bash
+curl --http1.1 -H 'accept: application/json' \
+  'https://cgv.co.kr/api/v1/booking/searchRegnList?coCd=A420' -o /dev/null -w '%{http_code}\n'
+```
+
 **일부 데이터센터 IP는 통째로 차단됩니다.** Oracle Cloud 도쿄에서는 홈페이지까지 403이었고
 (같은 서버에서 네이버는 정상), GitHub Actions와 Cloudflare Workers에서는 200이었습니다.
 막히는 곳에서는 Cloudflare Worker를 프록시로 두고 아래 환경변수로 경유시킵니다.
