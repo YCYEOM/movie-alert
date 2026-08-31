@@ -23,6 +23,7 @@ jobs:
         env:
           TZ: Asia/Seoul   # 러너는 UTC 라서 없으면 날짜 창이 하루 밀린다
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NOTICE_WEBHOOK_URL: ${{ secrets.NOTICE_WEBHOOK_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 cgv_alert.py --once

@@ -146,7 +146,9 @@ def scan(target, ymds, pause):
 
 def send(text, cfg, env="DISCORD_WEBHOOK_URL"):
     """설정된 채널로 전송. Discord 와 Telegram 둘 다 켜져 있으면 둘 다 보낸다."""
-    discord = os.environ.get(env) or cfg.get("discord_webhook")
+    # 공고용 채널을 따로 안 만들었으면 기본 채널로 보낸다 (안 보내는 것보다 낫다)
+    discord = (os.environ.get(env) or cfg.get("discord_webhook")
+               or os.environ.get("DISCORD_WEBHOOK_URL"))
     token = os.environ.get("TELEGRAM_TOKEN") or cfg.get("telegram_token")
     chat = os.environ.get("TELEGRAM_CHAT_ID") or cfg.get("telegram_chat_id")
     if not discord and not token:
