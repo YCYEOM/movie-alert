@@ -160,44 +160,45 @@ def site_dates(site_no, cap):
 DOW = "월화수목금토일"
 
 
-def first_at(byday):
-    """그 편성이 처음 등장하는 (날짜+시각). 정렬용."""
-    return min(ymd + min(ts) for ymd, ts in byday.items())
-
-
 def daylabel(ymd):
     wd = DOW[date(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:])).weekday()]
     return f"{ymd[4:6]}/{ymd[6:]}({wd})"
 
 
+def room_rank(scns):
+    """상영관 정렬 순서. IMAX 를 맨 위로 둔다 — 이 감시의 목적이 대체로 그것이라서.
+
+    시각을 빼면서 "가장 이른 회차 순" 정렬이 의미를 잃어, 대신 특별관 우선순위로 세운다.
+    """
+    up = scns.upper()
+    for i, tag in enumerate(("IMAX", "4DX", "SCREENX")):
+        if tag in up or (tag == "IMAX" and "아이맥스" in scns):
+            return i
+    return 9
+
+
 def render(name, keys):
-    """회차를 상영관 > 영화 > (같은 시간표를 쓰는 날짜들) 로 묶는다.
+    """회차를 상영관 > 영화 > 날짜 로 묶는다. 시각은 넣지 않는다.
 
-    회차마다 한 줄씩 뿌리면 오픈 한 번에 수십 줄이라 디스코드에서 안 읽힌다.
-    상영관을 위에 두는 건 "IMAX 열렸나"가 가장 먼저 보고 싶은 것이라서다.
-
-    날짜를 묶는 건 CGV 가 여러 날에 같은 편성을 거는 일이 흔하기 때문이다.
-    실측(8/28~8/31 신규 43건)에서 09/02·09/03·09/05 의 시간표가 글자까지 같았고,
-    묶는 것만으로 934자 -> 541자가 됐다. 버리는 정보는 없다.
+    오픈 순간에 필요한 건 "어느 관에 무엇이 며칠치 열렸나"까지고, 시간표는
+    어차피 CGV 에서 고르게 된다. 시각을 빼면 아바타 IMAX 7일 21회차가 네 줄이다.
+    대신 날짜 뒤에 회차 수를 적어 얼마나 열렸는지는 알 수 있게 둔다.
     """
     rooms = {}
     for k in keys:
-        ymd, scns, prod, t = k.split("|")
+        ymd, scns, prod, _ = k.split("|")
         m = re.match(r"^(.*)\(([^()]*)\)$", prod)  # 제목 끝 괄호가 상영 포맷
         title, fmt = (m.group(1).strip(), m.group(2)) if m else (prod, "")
-        rooms.setdefault(scns, {}).setdefault((title, fmt), {}).setdefault(ymd, []).append(t)
+        rooms.setdefault(scns, {}).setdefault((title, fmt), []).append(ymd)
     days = {k[:8] for k in keys}
     lines = [f"**{name} 예매 오픈** · {len(days)}일 {len(keys)}회차"]
-    for scns in sorted(rooms, key=lambda s: min(map(first_at, rooms[s].values()))):
+    for scns in sorted(rooms, key=lambda s: (room_rank(s),
+                                            min(min(v) for v in rooms[s].values()), s)):
         lines.append(f"▸ **{scns}**")
-        for (title, fmt), byday in sorted(rooms[scns].items(), key=lambda x: first_at(x[1])):
+        for (title, fmt), ymds in sorted(rooms[scns].items(), key=lambda x: min(x[1])):
             lines.append(f"　{title} · {fmt}" if fmt else f"　{title}")
-            same = {}
-            for ymd, ts in byday.items():
-                same.setdefault(tuple(sorted(ts)), []).append(ymd)
-            for ts, ymds in sorted(same.items(), key=lambda x: min(x[1])):
-                lines.append("　　" + ", ".join(daylabel(y) for y in sorted(ymds)))
-                lines.append("　　　" + "  ".join(f"{t[:2]}:{t[2:]}" for t in ts))
+            lines.append("　　" + ", ".join(daylabel(y) for y in sorted(set(ymds)))
+                         + f" · {len(ymds)}회")
     return "\n".join(lines)
 
 
@@ -516,24 +517,22 @@ def selftest():
             "20260902|4DX관|스파이더맨(ULTRA 4DX 2D)|1300",
             "20260903|IMAX관|오디세이(IMAX LASER 2D)|0730"]
     out = render("용산", keys)
-    assert "07:30  11:00" in out, "같은 관·영화의 시각은 한 줄에"
-    assert out.count("▸ **IMAX관**") == 1, "관 머리글은 한 번만 (날짜는 안쪽)"
-    assert "09/02(수)" in out and "09/03(목)" in out, "날짜에 요일"
-
-    # 같은 시간표를 쓰는 날짜는 한 줄로 묶인다
-    merged = render("용산", [f"{y}|IMAX관|아바타(IMAX 2D)|{t}"
-                            for y in ("20260910", "20260911") for t in ("1000", "1400")])
-    assert "09/10(목), 09/11(금)" in merged, "같은 편성이면 날짜를 묶어야 함"
-    assert merged.count("10:00  14:00") == 1, "시간표는 한 번만 적는다"
-    # 시간표가 하나라도 다르면 묶지 않는다 (23:30 / 23:20 같은 실제 사례)
-    split = render("용산", ["20260910|IMAX관|아바타(IMAX 2D)|1000",
-                           "20260911|IMAX관|아바타(IMAX 2D)|1400"])
-    assert "09/10(목), 09/11(금)" not in split, "다른 편성을 묶으면 안 됨"
-    assert "09/10(목)" in split and "09/11(금)" in split, "그래도 둘 다 나와야 함"
+    assert out.count("▸ **IMAX관**") == 1, "관 머리글은 한 번만"
+    assert not re.search(r"\d\d:\d\d", out), "시각은 넣지 않는다"
+    assert "09/02(수), 09/03(목) · 3회" in out, "영화별로 날짜를 묶고 횟수를 센다"
     assert "오디세이 · IMAX LASER 2D" in out, "제목과 포맷을 나눠서"
     assert "2일 4회차" in out
+    # IMAX 가 맨 위로 온다 (시각을 뺀 뒤로는 특별관 우선순위로 세운다)
+    assert out.index("▸ **IMAX관**") < out.index("▸ **4DX관**"), "IMAX 가 먼저"
+    assert [room_rank(r) for r in ("IMAX관", "4DX관", "14관[SCREENX]", "아트하우스")] == [0, 1, 2, 9]
+
+    # 같은 영화면 날짜가 한 줄로 모인다 (시각이 달라도 이제는 묶인다)
+    merged = render("용산", [f"{y}|IMAX관|아바타(IMAX 2D)|{t}"
+                            for y in ("20260910", "20260911") for t in ("1000", "1400")])
+    assert "09/10(목), 09/11(금) · 4회" in merged, "날짜를 묶고 회차 수를 적는다"
+    assert merged.count("아바타 · IMAX 2D") == 1, "영화 줄은 한 번만"
     # 괄호 없는 제목도 깨지지 않아야 한다
-    assert render("x", ["20260902|IMAX관|무제|0730"]).endswith("07:30")
+    assert render("x", ["20260902|IMAX관|무제|0730"]).endswith("· 1회")
 
     # 공고 필터: 키워드가 든 것만, 그리고 한 번 본 것은 다시 알리지 않는다
     pat = re.compile("|".join(re.escape(w) for w in ["예매", "IMAX", "SCREENX"]), re.IGNORECASE)
