@@ -194,7 +194,7 @@ sudo vi /etc/movie-alert.env          # 웹훅/토큰 변경
 20% 미만이면 회수될 수 있는데([공식 문서](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)),
 이 프로그램은 그 조건에 정확히 해당합니다. 조용히 사라지는 걸 알아채기 위한 장치입니다.
 
-`heartbeat_hours`를 `0`으로 두면 끕니다. 부재를 직접 알아차려야 하는 게 부담이면
+`heartbeat_hour`(0~23, 기본 9)에 적힌 시각이 지나면 그날 한 번 보냅니다. `null`로 두면 끕니다. 부재를 직접 알아차려야 하는 게 부담이면
 [healthchecks.io](https://healthchecks.io) 같은 데드맨 스위치를 붙이는 편이 확실합니다 —
 핑이 끊기면 그쪽에서 먼저 알려줍니다.
 

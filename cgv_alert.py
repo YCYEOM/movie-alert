@@ -414,16 +414,21 @@ def sweep_pairs(cfg, state):
 
 
 def heartbeat(cfg, state):
-    """하루 한 번 생존 신호. 이게 끊기면 감시가 죽은 것이다.
+    """하루 한 번, 정해진 시각에 생존 신호. 이게 끊기면 감시가 죽은 것이다.
 
     오라클 무료 인스턴스는 7일간 CPU/네트워크가 20% 미만이면 회수될 수 있는데,
     이 프로그램은 그 조건에 정확히 해당한다. 조용히 사라지는 걸 막는 장치.
+
+    경과시간이 아니라 벽시계 기준이다. 경과시간으로 재면 기준점이 마지막 재시작
+    시각으로 굳어서 매일 어정쩡한 시각에 온다.
     """
-    hours = cfg.get("heartbeat_hours", 24)
-    if not hours:
+    hour = cfg.get("heartbeat_hour", 9)
+    if hour is None:
         return
+    now = time.localtime()
+    today = time.strftime("%Y%m%d", now)
     meta = state.setdefault("__meta__", {})
-    if time.time() - meta.get("last", 0) < hours * 3600:
+    if now.tm_hour < hour or meta.get("hb") == today:
         return
     lines = []
     for target in cfg["targets"]:
@@ -434,7 +439,7 @@ def heartbeat(cfg, state):
         upto = f'{days[-1][4:6]}/{days[-1][6:]}까지' if days else '없음'
         lines.append(f'{target["name"]} {len(entry["shows"])}건 · {upto}')
     send("🟢 감시 중\n" + "\n".join(lines), cfg.get("notify", {}))
-    meta["last"] = time.time()
+    meta["hb"] = today
     save_state(state)
 
 
@@ -627,6 +632,24 @@ def selftest():
         assert [30 * 2 ** (n - 1) for n in range(1, 6)] == [30, 60, 120, 240, 480]
     finally:
         g["_cool_until"], g["_cool_step"], g["get"] = saved
+
+    # 하트비트: 정해진 시각 전엔 조용하고, 하루 한 번만 보낸다
+    sent = []
+    sav_send, sav_save = g["send"], g["save_state"]
+    g["send"], g["save_state"] = lambda m, n: sent.append(m), lambda s: None
+    try:
+        cfg = {"targets": [{"name": "x"}], "heartbeat_hour": time.localtime().tm_hour + 1}
+        st = {"x": {"shows": {"20260901|1": {}}, "dates": [], "seen": []}}
+        heartbeat(cfg, st)
+        assert not sent, "시각 전엔 보내면 안 됨"
+        cfg["heartbeat_hour"] = time.localtime().tm_hour
+        heartbeat(cfg, st)
+        heartbeat(cfg, st)
+        assert len(sent) == 1, f"하루 한 번이어야 함: {sent}"
+        heartbeat({**cfg, "heartbeat_hour": None}, {})
+        assert len(sent) == 1, "None 이면 꺼져야 함"
+    finally:
+        g["send"], g["save_state"] = sav_send, sav_save
 
     live = get("booking/searchRegnList")
     assert any(s["siteNm"] == "용산아이파크몰" for r in live for s in r["siteList"])

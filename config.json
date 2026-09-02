@@ -2,7 +2,7 @@
   "tick_seconds": 1.0,
   "sweep_per_tripwire": 2,
   "days_ahead": 60,
-  "heartbeat_hours": 24,
+  "heartbeat_hour": 9,
   "notice_seconds": 300,
   "targets": [
     {
