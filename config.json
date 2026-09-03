@@ -1,5 +1,5 @@
 {
-  "tick_seconds": 1.0,
+  "tick_seconds": 0.75,
   "sweep_per_tripwire": 2,
   "days_ahead": 60,
   "heartbeat_hour": 9,
