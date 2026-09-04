@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
 
@@ -160,9 +161,19 @@ def site_dates(site_no, cap):
 DOW = "월화수목금토일"
 
 
-def daylabel(ymd):
+def daylabel(ymd, name=None, site_no=None):
+    """site_no 가 있으면 그 극장·그 날짜 시간표로 바로 가는 링크를 건다.
+
+    siteNo 가 데이터를, siteNm 은 화면의 극장칩 이름만 정한다(둘 다 있어야 극장이
+    잡힌다). 앱으로 넘기는 딥링크는 CGV 가 공개하지 않아(assetlinks/AASA 없음)
+    모바일 웹으로 열린다. 로그인돼 있으면 회차 한 번, 좌석 한 번이면 끝.
+    """
     wd = DOW[date(int(ymd[:4]), int(ymd[4:6]), int(ymd[6:])).weekday()]
-    return f"{ymd[4:6]}/{ymd[6:]}({wd})"
+    label = f"{ymd[4:6]}/{ymd[6:]}({wd})"
+    if not site_no:
+        return label
+    return (f"[{label}](https://cgv.co.kr/cnm/movieBook/cinema"
+            f"?siteNo={site_no}&siteNm={urllib.parse.quote(name)}&scnYmd={ymd})")
 
 
 def room_rank(scns):
@@ -177,7 +188,7 @@ def room_rank(scns):
     return 9
 
 
-def render(name, keys):
+def render(name, keys, site_no=None):
     """회차를 상영관 > 영화 > 날짜 로 묶는다. 시각은 넣지 않는다.
 
     오픈 순간에 필요한 건 "어느 관에 무엇이 며칠치 열렸나"까지고, 시간표는
@@ -197,7 +208,8 @@ def render(name, keys):
         lines.append(f"▸ **{scns}**")
         for (title, fmt), ymds in sorted(rooms[scns].items(), key=lambda x: min(x[1])):
             lines.append(f"　{title} · {fmt}" if fmt else f"　{title}")
-            lines.append("　　" + ", ".join(daylabel(y) for y in sorted(set(ymds)))
+            lines.append("　　" + ", ".join(daylabel(y, name, site_no)
+                                            for y in sorted(set(ymds)))
                          + f" · {len(ymds)}회")
     return "\n".join(lines)
 
@@ -234,7 +246,8 @@ def send(text, cfg, env="DISCORD_WEBHOOK_URL"):
         return
     for chunk in chunks(text):
         if discord:
-            post(discord, {"content": chunk})
+            # flags 4 = SUPPRESS_EMBEDS. 링크마다 CGV 미리보기 카드가 붙는 걸 막는다.
+            post(discord, {"content": chunk, "flags": 4})
         if token and chat:
             post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
@@ -273,7 +286,7 @@ def load_state():
 
 def alert(name, fresh, cfg):
     log(f"{name} 신규 {len(fresh)}건")
-    send(render(name, fresh), cfg.get("notify", {}))
+    send(render(name, fresh, target_of(cfg, name)["site_no"]), cfg.get("notify", {}))
 
 
 def entry_of(state, name):
@@ -538,6 +551,12 @@ def selftest():
     assert merged.count("아바타 · IMAX 2D") == 1, "영화 줄은 한 번만"
     # 괄호 없는 제목도 깨지지 않아야 한다
     assert render("x", ["20260902|IMAX관|무제|0730"]).endswith("· 1회")
+
+    # 날짜에 걸리는 예매 링크: 극장 + 그 날짜 시간표로 바로
+    linked = render("용산아이파크몰", ["20260902|IMAX관|무제|0730"], "0013")
+    assert ("[09/02(수)](https://cgv.co.kr/cnm/movieBook/cinema?siteNo=0013"
+            "&siteNm=%EC%9A%A9%EC%82%B0%EC%95%84%EC%9D%B4%ED%8C%8C%ED%81%AC%EB%AA%B0"
+            "&scnYmd=20260902)") in linked, "날짜마다 그 날 시간표 링크"
 
     # 공고 필터: 키워드가 든 것만, 그리고 한 번 본 것은 다시 알리지 않는다
     pat = re.compile("|".join(re.escape(w) for w in ["예매", "IMAX", "SCREENX"]), re.IGNORECASE)
